@@ -1,0 +1,93 @@
+#!/usr/bin/env bash
+set -euo pipefail
+here="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+source "$here/lib/usage.sh"
+
+config="${QUOTA_DISPATCH_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/quota-dispatcher}"
+state="${QUOTA_DISPATCH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/quota-dispatcher}"
+cooldown="${QUOTA_DISPATCH_COOLDOWN:-3600}"
+
+usage() {
+  printf '%s\n' 'Usage: quota-dispatch status | pick | run [args...] | limit PROFILE [SECONDS]' >&2
+}
+valid_profile() {
+  [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]
+}
+mark_limited() {
+  local profile="$1" seconds="$2" temp
+  [[ "$seconds" =~ ^[1-9][0-9]{0,8}$ ]] || return 2
+  mkdir -p -- "$state"
+  temp="$(mktemp "$state/.cooldown.XXXXXXXX")"
+  printf '%s\n' "$(( $(date +%s) + seconds ))" > "$temp"
+  mv -f -- "$temp" "$state/$profile.cooldown"
+}
+
+action="${1:-}"
+case "$action" in
+  status|pick) [[ $# == 1 ]] || { usage; exit 2; } ;;
+  run) shift ;;
+  limit)
+    if [[ $# -lt 2 || $# -gt 3 ]] || ! valid_profile "$2"; then
+      usage
+      exit 2
+    fi
+    mark_limited "$2" "${3:-$cooldown}"
+    exit
+    ;;
+  *) usage; exit 2 ;;
+esac
+
+if [[ ! -r "$config/order" ]]; then
+  printf 'Missing profile order file: %s\n' "$config/order" >&2
+  exit 2
+fi
+
+while IFS= read -r -u 3 profile || [[ -n "$profile" ]]; do
+  [[ -n "$profile" && "$profile" != \#* ]] || continue
+  valid_profile "$profile" || { printf 'Invalid profile: %s\n' "$profile" >&2; exit 2; }
+  adapter="$config/$profile/run"
+  meter="$config/$profile/usage"
+  until_epoch=0
+  if [[ -r "$state/$profile.cooldown" ]]; then
+    read -r until_epoch < "$state/$profile.cooldown" || true
+  fi
+  remaining=UNKNOWN
+  if [[ ! -x "$adapter" ]]; then
+    reason='adapter missing'
+  elif [[ "$until_epoch" =~ ^[1-9][0-9]{0,10}$ ]] && (( until_epoch > $(date +%s) )); then
+    reason="cooldown until epoch $until_epoch"
+  else
+    if [[ -x "$meter" ]]; then
+      remaining="$("$meter")" || remaining=UNKNOWN
+    fi
+    if agent_runtime_remaining_zero "$remaining"; then
+      reason='quota exhausted'
+    else
+      reason='eligible'
+    fi
+  fi
+  case "$action" in
+    status) printf '%s\t%s\t%s\n' "$profile" "$reason" "$remaining" ;;
+    pick)
+      if [[ "$reason" == eligible ]]; then
+        printf '%s\n' "$profile"
+        exit
+      fi
+      ;;
+    run)
+      [[ "$reason" == eligible ]] || continue
+      result=0
+      "$adapter" "$@" 3<&- || result=$?
+      if [[ "$result" == 75 ]]; then
+        mark_limited "$profile" "$cooldown" || printf 'Could not record cooldown for %s\n' "$profile" >&2
+        printf '%s reached its limit. Automatic replay is disabled.\n' "$profile" >&2
+      fi
+      exit "$result"
+      ;;
+  esac
+done 3< "$config/order"
+
+if [[ "$action" != status ]]; then
+  printf '%s\n' 'No eligible subscription profile.' >&2
+  exit 1
+fi
