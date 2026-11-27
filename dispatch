@@ -8,7 +8,7 @@ state="${QUOTA_DISPATCH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/quota-dispa
 cooldown="${QUOTA_DISPATCH_COOLDOWN:-3600}"
 
 usage() {
-  printf '%s\n' 'Usage: dispatch manager [args...] | status | pick | run [--on PROFILE] [args...] | limit PROFILE [SECONDS]' >&2
+  printf '%s\n' 'Usage: dispatch manager [args...] | status | pick | run [--agent PROFILE | -a PROFILE] [args...] | limit PROFILE [SECONDS]' >&2
 }
 valid_profile() {
   [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]
@@ -25,6 +25,10 @@ mark_limited() {
 # Manager owns interactive sessions, provider selection, and fleet commands.
 if [[ "${1:-}" == manager ]]; then
   shift
+  if [[ "${1:-}" == --on || ( "${1:-}" == start && "${2:-}" == --on ) ]]; then
+    printf '%s\n' 'Choose the agent with --agent NAME or -a NAME.' >&2
+    exit 2
+  fi
   if command -v manager >/dev/null 2>&1; then
     export AGENT_ATTENDED=1
     manager "$@"
@@ -46,6 +50,10 @@ case "$action" in
   run)
     shift
     if [[ "${1:-}" == --on ]]; then
+      usage
+      exit 2
+    fi
+    if [[ "${1:-}" == --agent || "${1:-}" == -a ]]; then
       if [[ $# -lt 2 ]] || ! valid_profile "$2"; then
         usage
         exit 2
