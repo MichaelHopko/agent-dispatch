@@ -1,0 +1,32 @@
+name: Orca session replay
+on:
+  push:
+    branches: [prototype/orca-session-replay]
+permissions:
+  contents: read
+jobs:
+  replay:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run Orca 1.4.278 with isolated fixtures
+        shell: bash
+        run: |
+          set -eu
+          cd "$RUNNER_TEMP"
+          curl -fLsS --retry 2 https://github.com/stablyai/orca/releases/download/v1.4.278/orca-server-linux-x64.tar.gz -o orca.tgz
+          echo 'de38855fb18c7d641c9abb2a862b3f7325b7d75230daedcde1f48d2407130f9d  orca.tgz' | sha256sum -c -
+          tar xzf orca.tgz
+          export ORCA_BIN="$PWD/orca-server-1.4.278-linux-x64/bin/orca-ide"
+          "$ORCA_BIN" serve --bind 127.0.0.1 --no-pairing > server.log 2>&1 &
+          server=$!
+          trap 'kill "$server" 2>/dev/null || true' EXIT
+          for i in {1..45}; do
+            if "$ORCA_BIN" status --json | jq -e '.result.runtime.reachable' >/dev/null; then break; fi
+            sleep 1
+          done
+          "$ORCA_BIN" status --json
+          python3 "$GITHUB_WORKSPACE/prototypes/orca/replay.py" "$RUNNER_TEMP/fixture"
