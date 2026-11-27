@@ -1,6 +1,115 @@
-#!/usr/bin/env bash
-set -euo pipefail
-cd "${MANAGER_LEARNINGS_WORKSPACE:?Set MANAGER_LEARNINGS_WORKSPACE to the workspace to review}"
-evidence="${MANAGER_LEARNINGS_EVIDENCE:?Set MANAGER_LEARNINGS_EVIDENCE to a directory of session notes or transcripts}"
-test -d "$evidence" || { echo "Missing evidence directory: $evidence" >&2; exit 1; }
-exec "$MANAGER_CLI" run "Review session evidence in $evidence updated within the past day. Read user corrections in context. Check candidates against the current workspace instructions and implementation. Make the smallest verified improvement to the relevant instructions if authorized by the workspace. Skip duplicates and uncertain claims. Report changes or that no new guidance was needed."
+#!/usr/bin/env python3
+"""Review workspace evidence and deliver approved unfinished findings to an optional intake."""
+import datetime as dt
+import fcntl
+import hashlib
+import json
+import math
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+TOOLS = ROOT / "lib/learning"
+DEBRIEF = TOOLS / "session-debrief.sh"
+
+
+def atomic_write(path, content):
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as stream:
+        stream.write(content)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(stream.name, path)
+
+
+def review(workspace, state, intake, env):
+    queue = subprocess.check_output([DEBRIEF, "queue"], text=True, env=env)
+    if queue == "(empty)\n":
+        queue = ""
+    extra = env.get("MANAGER_LEARNINGS_EVIDENCE")
+    stamp = state / "reviewed-at"
+    now = dt.datetime.now(dt.timezone.utc)
+    start = dt.datetime.fromisoformat(stamp.read_text()) if stamp.exists() else now - dt.timedelta(hours=26)
+    if extra:
+        evidence_dir = Path(extra).resolve(strict=True)
+        if not evidence_dir.is_dir():
+            raise ValueError(f"Expected evidence directory at {evidence_dir}")
+        evidence = f"Inspect files updated in {evidence_dir} since {start.isoformat()}."
+    else:
+        hours = max(1, math.ceil((now-start).total_seconds()/3600))
+        listing = subprocess.check_output(
+            [TOOLS / "session-transcripts.py", "list", "--workspace", workspace,
+             "--agent", "all", "--since-hours", str(hours)], text=True, env=env)
+        listing = "\n".join(row for row in listing.splitlines() if row.split("\t")[5:6] == ["substantive"])
+        if not queue and not listing:
+            return {"summary":"No new workspace evidence.", "findings":[], "queue":"", "until":now.isoformat()}
+        evidence = (f"Read substantive sessions from the inventory using {TOOLS}/session-transcripts.py extract. "
+                    "Read deferred transcripts named in the queue using the same tool.\n" + listing)
+    prompt = ("Review session evidence. Follow the review criteria in " + str(ROOT / "skills/daily-learnings/SKILL.md")
+              + ". The wrapper owns queue acknowledgement and ticket delivery. "
+              "Verify any guidance edits in this workspace. Report incomplete reviews as blocked. "
+              + evidence + "\nQueued evidence:\n" + queue)
+    if intake or queue:
+        prompt += ('\nReturn only JSON with reviewed (boolean), summary (string) and findings (array). '
+                   'Use reviewed=true only once the supplied evidence is fully processed. '
+                   'Each finding is concrete unfinished work with key (stable source event plus finding), '
+                   'title, body (including done criteria), evidence (a locator, omit raw transcript contents). '
+                   'Return [] for completed guidance edits, already resolved items, and unsupported claims.')
+    out = subprocess.run([env["MANAGER_CLI"], "run"], input=prompt, text=True, capture_output=True, env=env)
+    if out.returncode:
+        sys.stderr.write(out.stderr)
+        raise RuntimeError("Learning review failed")
+    if intake or queue:
+        data = json.loads(out.stdout.strip())
+        if data.get("reviewed") is not True or not isinstance(data.get("findings"), list):
+            raise RuntimeError("Review incomplete; retaining evidence")
+    else:
+        data = {"summary":out.stdout.strip(), "findings":[]}
+    return dict(data, queue=queue, until=now.isoformat())
+
+
+def main():
+    workspace = Path(os.environ["MANAGER_LEARNINGS_WORKSPACE"]).resolve(strict=True)
+    os.chdir(workspace)
+    base = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local/state"))
+    key = hashlib.sha256(os.fsencode(workspace)).hexdigest()
+    state = base / "manager/learning" / key / "sweeps"
+    state.mkdir(parents=True, exist_ok=True, mode=0o700)
+    env = dict(os.environ, SESSION_DEBRIEF_WORKSPACE=str(workspace), SESSION_DEBRIEF_ACTIVE="1")
+    env.pop("LINEAR_API_KEY", None)
+    intake = os.getenv("MANAGER_LEARNINGS_INTAKE")
+    route = [intake or "", os.getenv("MANAGER_LINEAR_TEAM", "")]
+    with (state / "lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        pending = state / "pending.json"
+        if pending.exists():
+            data = json.loads(pending.read_text())
+            if data["route"] != route:
+                raise ValueError("Restore the intake and team used for the pending review before resuming")
+        else:
+            data = dict(review(workspace, state, intake, env), route=route)
+            atomic_write(pending, json.dumps(data))
+        if data["findings"]:
+            findings = state / "findings.json"
+            atomic_write(findings, json.dumps(data["findings"]))
+            if intake:
+                subprocess.run([intake, "intake", findings], check=True)
+            else:
+                # Preserve unfinished work locally when no tracker is configured.
+                findings.rename(state / ("findings-" + data["until"].replace(":", "-") + ".json"))
+        if data["queue"]:
+            snapshot = state / "processed.jsonl"
+            atomic_write(snapshot, data["queue"])
+            subprocess.run([DEBRIEF, "acknowledge", snapshot], env=env, check=True)
+        atomic_write(state / "reviewed-at", data["until"])
+        pending.unlink()
+        print(data.get("summary", ""))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, KeyError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+        sys.exit(f"daily-learnings: {exc}")

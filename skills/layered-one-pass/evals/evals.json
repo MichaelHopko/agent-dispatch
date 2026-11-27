@@ -1,0 +1,31 @@
+{
+  "skill_name": "layered-one-pass",
+  "evals": [
+    {
+      "id": 1,
+      "prompt": "Goal: let customers approve sales quotes by replying to an email. Give me the plan in under 300 words; do not run anything.",
+      "expectations": [
+        "States the observable end result beyond the feature itself (e.g. the approved quote reaching the next step such as an order)",
+        "Covers failure or edge handling at a handoff, such as stale approvals, duplicate replies, or retry",
+        "Recommends one smallest complete approach after comparing at least one alternative (reuse, manual, buy, or build)"
+      ]
+    },
+    {
+      "id": 2,
+      "prompt": "There are 6 open tickets, each fixing one untranslated UI string on a different page of the same web app. How should these be delivered? Answer briefly; do not run anything.",
+      "expectations": [
+        "Groups the six same-root-cause fixes into one change or layer rather than six serial tickets",
+        "Says to check the result in the real rendered UI, not only with unit tests"
+      ]
+    },
+    {
+      "id": 3,
+      "prompt": "The unit and integration tests pass for the new invoice sync to the accounting system. Is the feature done? Answer briefly; do not run anything.",
+      "expectations": [
+        "Says passing component tests do not prove the feature works end to end",
+        "Calls for exercising the integrated path at real entry points, including a failure or recovery case",
+        "Distinguishes implemented or connected from verified"
+      ]
+    }
+  ]
+}

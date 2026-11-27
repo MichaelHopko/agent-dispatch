@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -eu
+source "$(dirname "$0")/sync.sh"
+freshness_log() { printf '%s\n' "$*"; }
+repos="${MANAGER_REPOS:?Set MANAGER_REPOS to the directory containing the checkouts to sync}"
+[[ -d "$repos" ]] || { echo "Missing repository directory: $repos" >&2; exit 1; }
+failed=0
+for repo in "$repos"/*; do
+  [[ -e "$repo/.git" ]] || continue
+  sync_repo "$repo" || failed=1
+done
+exit "$failed"

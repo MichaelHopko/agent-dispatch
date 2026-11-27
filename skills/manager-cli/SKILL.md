@@ -1,8 +1,16 @@
 ---
 name: manager-cli
-description: Delegate a bounded task to an installed agent CLI through Manager. Use when the user asks to delegate work or requests a particular subscription-backed agent.
+description: Delegate a bounded task to a local subscription-backed agent with Manager and return its result to the current conversation.
 ---
 
-Run `manager run "goal"` in the intended working directory. Include the outcome, relevant context, constraints, and how to verify success. Pass arguments as a subprocess argument array when available. For a long brief, send it on stdin to `manager run`. Use `--agent NAME` after `run` when the caller specifies an agent. Otherwise let Manager choose.
+Executable: `manager`
 
-Return the result to the originating conversation. A nonzero exit means the caller should inspect the failure and any partial work before retrying. Exit 75 records a provider cooldown. Use `manager status` to inspect availability. Interactive sessions and startup hooks are separate operator commands.
+Use the executable above on the host with the configured provider CLIs. Run it in the intended workspace. Delegate one goal per invocation and include the context, constraints, and completion check. Use a subprocess argument array when the tool supports one. A multiline brief can be passed on standard input.
+
+| Arguments | Use |
+| --- | --- |
+| `run "goal"` | Delegate with automatic agent selection. |
+| `run --agent grok "goal"` | Select Grok when the user requests it. Substitute another configured agent as needed. |
+| `status` | Inspect available profiles and reported quota. |
+
+Read stdout and the exit status. Return the relevant result to the originating conversation. For a requested external action, verify its receipt before reporting delivery. On failure, inspect stderr and any partial work before retrying. Exit 75 indicates a provider cooldown.

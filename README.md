@@ -4,20 +4,19 @@ Launch an interactive coding agent or delegate a job from OpenClaw, a shell, or 
 
 ## Install and run
 
-Requires Python 3.8+ on Linux or macOS, Bash, and at least one provider CLI on PATH.
+On Linux or macOS, install Python 3.9+, Bash and Git. Install and sign in to at least one supported agent CLI on the computer that will run jobs.
 
 ```sh
 git clone https://github.com/MichaelHopko/agent-dispatch.git
 cd agent-dispatch
-export PATH="$PWD:$PATH"
+./install.sh --openclaw
+export PATH="$HOME/.local/bin:$PATH"
 
-manager -a grok
-manager --agent codex "Review the current branch"
-manager run "Summarize today's changes"
 manager status
+manager run "Summarize this workspace"
 ```
 
-`manager "goal"` opens an interactive session in the terminal. `manager run` runs headlessly, accepts a goal as arguments or stdin, and returns the provider output and exit status. Use `--agent` or `-a` to pin an eligible agent. For OpenClaw, install the [manager-cli skill](skills/manager-cli/SKILL.md) in its skills directory and make the Manager executable available on the gateway host. The working directory and provider logins belong to the user running the command.
+`manager "goal"` opens an interactive session in the terminal. `manager run` runs headlessly, accepts a goal as arguments or stdin, and returns the provider output and exit status. Use `manager -a grok` for an interactive Grok session, or `manager run --agent codex "Review the current branch"` for a headless job pinned to Codex. Run the installer on the OpenClaw gateway host. The `--openclaw` option installs the [manager-cli skill](skills/manager-cli/SKILL.md) with the exact command path. Open a new OpenClaw chat and ask it to use Manager for a task. For terminal use alone run `./install.sh`. Keep the checkout in place because the installed commands link to it. The working directory and provider logins belong to the user running the command.
 
 ## Routing
 
@@ -44,16 +43,22 @@ Hooks inherit the environment, working directory, and absolute `MANAGER_CLI` pat
 
 ## Plugins
 
-Enable a plugin by linking its directory into `~/.config/manager/plugins/`. An executable named `start`, `status`, `watch`, or `recover` runs with that lifecycle command. For a scheduled job, add a positive interval in seconds in `interval` and an executable `run`. Invoke `manager watch` periodically with cron, launchd, or a systemd user timer. Each pass runs due jobs, records successful completion, and locks each scheduled job against overlapping invocations. Export plugin settings in the scheduler's environment.
-
-| Plugin | Setup |
-| --- | --- |
-| [daily-learnings](plugins/daily-learnings) | Set `MANAGER_LEARNINGS_WORKSPACE` to the workspace whose guidance can improve, and `MANAGER_LEARNINGS_EVIDENCE` to session transcripts or notes. Reviews recent evidence daily. |
-| [ticket-worker](plugins/ticket-worker) | Set `MANAGER_TICKET_WORKSPACE` and `MANAGER_TICKET_QUEUE`. The queue adapter receives `claim DIRECTORY` and atomically leases one eligible ticket, writing its ID to `id` and brief to `goal`. An empty directory means idle. On `complete DIRECTORY` or `failed DIRECTORY`, reconcile the lease using `id`, stdout in `result`, and stderr in `error`. The adapter owns lease expiry, retry policy, and verification before closing a ticket. |
+Use `manager plugin list` to see bundled and enabled plugins. For a basic review, set the workspace and enable daily learnings:
 
 ```sh
-mkdir -p ~/.config/manager/plugins
-ln -s "$PWD/plugins/daily-learnings" ~/.config/manager/plugins/daily-learnings
+export MANAGER_LEARNINGS_WORKSPACE="$PWD"
+manager plugin enable daily-learnings
+manager watch
 ```
 
-Keep organization-specific sources and destinations in plugins. A PR reviewer consumes a diff and emits findings. A PR watcher reacts to changes. An intake plugin creates tickets, while a ticket worker claims existing ones. Scheduled research, digests, direction reviews, and dashboards can each supply their own inputs and delivery hooks.
+Run `manager watch` periodically with cron, launchd or a systemd user timer. Set the same configuration in the scheduler environment. `manager plugin disable NAME` removes the enabled link. Provider routing and interactive sessions work without scheduling any jobs.
+
+| Optional capability | Setup |
+| --- | --- |
+| Coordinate workers, collect reports and answer questions | [Worker coordination](docs/workers.md) and [manager roles](docs/coordination.md) |
+| Learn from local Claude, Codex, Cursor or Grok sessions | [Session discovery, debriefs and daily learnings](docs/learning.md) |
+| File or update a Linear issue, run a worker, and verify delivery before closing it | [Linear intake and ticket workers](docs/linear.md) |
+| Review pull requests, keep Git repositories current, or run recurring project briefs | [GitHub and scheduled integrations](docs/integrations.md) |
+| Supervise services specific to an installation | [Service hooks](docs/services.md) |
+
+To add your own plugin, link its directory under `~/.config/manager/plugins/`. An executable named `start`, `status`, `watch`, or `recover` runs during that lifecycle command. For scheduled work provide an `interval` file containing positive seconds and an executable `run`. Manager records successful completion and locks each scheduled plugin against overlapping runs. Supply project policies, data sources and credentials through local configuration.

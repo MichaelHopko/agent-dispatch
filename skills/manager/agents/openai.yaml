@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manager"
+  short_description: "Help with Manager tasks and workflows"
+  default_prompt: "Use $manager to handle this workflow."
