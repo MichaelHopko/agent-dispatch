@@ -1,7 +1,6 @@
 name: Orca session replay
 on:
-  push:
-    branches: [prototype/orca-session-replay]
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
