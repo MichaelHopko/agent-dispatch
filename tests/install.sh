@@ -21,6 +21,11 @@ fi
 ADAPTER
 chmod +x "$config/grok/run"
 
+HOME="$tmp/home" "$root/install.sh"
+test ! -e "$OPENCLAW_STATE_DIR"
+test ! -e "$tmp/home/.openclaw"
+test "$("$tmp/home/.local/bin/manager" run --agent grok "Standalone goal")" = "Standalone goal"
+
 "$root/install.sh" --prefix "$prefix" --openclaw
 "$root/install.sh" --prefix "$prefix" --openclaw
 # Exercise the exact installed skill command without importing the user's PATH prefix.

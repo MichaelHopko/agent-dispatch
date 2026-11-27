@@ -1,6 +1,6 @@
 # Manager
 
-Launch an interactive coding agent or delegate a job from OpenClaw, a shell, or a scheduled task. Manager uses installed Claude, Codex, Grok, and Cursor CLIs. Sign in through the provider CLI before its first run.
+Manager launches interactive coding sessions and runs headless jobs from the command line. It selects among your installed Claude, Codex, Grok, and Cursor CLIs using their remaining quota.
 
 ## Install and run
 
@@ -9,14 +9,14 @@ On Linux or macOS, install Python 3.9+, Bash and Git. Install and sign in to at 
 ```sh
 git clone https://github.com/MichaelHopko/agent-dispatch.git
 cd agent-dispatch
-./install.sh --openclaw
+./install.sh
 export PATH="$HOME/.local/bin:$PATH"
 
 manager status
 manager run "Summarize this workspace"
 ```
 
-`manager "goal"` opens an interactive session in the terminal. `manager run` runs headlessly, accepts a goal as arguments or stdin, and returns the provider output and exit status. Use `manager -a grok` for an interactive Grok session, or `manager run --agent codex "Review the current branch"` for a headless job pinned to Codex. Run the installer on the OpenClaw gateway host. The `--openclaw` option installs the [manager-cli skill](skills/manager-cli/SKILL.md) with the exact command path. Open a new OpenClaw chat and ask it to use Manager for a task. For terminal use alone run `./install.sh`. Keep the checkout in place because the installed commands link to it. The working directory and provider logins belong to the user running the command.
+`manager "goal"` opens an interactive session in the terminal. `manager run` runs headlessly, accepts a goal as arguments or stdin, and returns the provider output and exit status. Use `manager -a grok` for an interactive Grok session, or `manager run --agent codex "Review the current branch"` for a headless job pinned to Codex. Keep the checkout in place because the installed commands link to it. Run Manager from the workspace you want the agent to use.
 
 ## Routing
 
@@ -62,3 +62,7 @@ Run `manager watch` periodically with cron, launchd or a systemd user timer. Set
 | Supervise services specific to an installation | [Service hooks](docs/services.md) |
 
 To add your own plugin, link its directory under `~/.config/manager/plugins/`. An executable named `start`, `status`, `watch`, or `recover` runs during that lifecycle command. For scheduled work provide an `interval` file containing positive seconds and an executable `run`. Manager records successful completion and locks each scheduled plugin against overlapping runs. Supply project policies, data sources and credentials through local configuration.
+
+## OpenClaw integration
+
+If you already use OpenClaw, run `./install.sh --openclaw` on its gateway host to add the [Manager skill](skills/manager-cli/SKILL.md) to that profile. Open a new chat and ask it to use Manager for a task.
