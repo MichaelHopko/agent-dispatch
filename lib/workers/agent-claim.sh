@@ -50,9 +50,7 @@ _agent_claim_ppid() {
   printf '%s\n' "$stat"
 }
 
-# Is $target this process or one of its ancestors? BASHPID, not $$: inside
-# farm.sh's per-task subshell $$ is still the farm pid that holds the claim, so
-# starting from $$ would answer a different question than the one asked.
+# Start at BASHPID so each worker subshell has a distinct identity.
 _agent_claim_is_ancestor() {
   local target="$1" pid="${BASHPID:-$$}" hops=0
   case "$target" in ''|*[!0-9]*) return 1 ;; esac
@@ -65,9 +63,7 @@ _agent_claim_is_ancestor() {
   return 1
 }
 
-# The process tree is not always intact — agent-spawn.sh --pane reparents the
-# worker onto the zellij server — so the holder is also exported to descendants.
-# An entry is id:pid: a recycled pid under a new holder does not match.
+# A detached terminal can reparent workers. Pass the claim ID and holder PID to children.
 _agent_claim_owned_has() {
   local id="$1" pid="$2" e
   for e in ${AGENT_CLAIM_OWNED:-}; do
@@ -109,10 +105,53 @@ _agent_claim_depth() {
   printf '%s\n' "$((file_n + 1))"
 }
 
-_agent_claim_create_excl() {
-  local path="$1" body="$2"
-  # Trailing newline matters: $(...) strips it from body, and nested= is appended.
-  ( set -C; printf '%s\n' "$body" > "$path" ) 2>/dev/null
+# Serialize stale-owner checks and publish complete records before another worker sees them.
+_agent_claim_install() {
+  python3 - "$1" "$2" <<'PY'
+import errno
+import fcntl
+import os
+from pathlib import Path
+import sys
+import tempfile
+
+path = Path(sys.argv[1])
+directory = os.open(path.parent, os.O_RDONLY)
+try:
+    fcntl.flock(directory, fcntl.LOCK_EX)
+    try:
+        fields = dict(line.split("=", 1) for line in path.read_text().splitlines() if "=" in line)
+    except FileNotFoundError:
+        fields = None
+    if fields is not None:
+        try:
+            pid = int(fields.get("pid", ""))
+            if pid > 0:
+                os.kill(pid, 0)
+                sys.exit(1)
+        except ValueError:
+            pass
+        except OSError as error:
+            if error.errno == errno.EPERM:
+                sys.exit(1)
+            if error.errno != errno.ESRCH:
+                raise
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".claim-", delete=False) as temp:
+        try:
+            temp.write(sys.argv[2] + "\n")
+            temp.close()
+            os.replace(temp.name, path)
+        finally:
+            if os.path.exists(temp.name):
+                os.unlink(temp.name)
+    if fields is not None:
+        print(f"claim: took over stale {path.name} (dead pid {fields.get('pid') or 'none'})", file=sys.stderr)
+except (OSError, OverflowError, UnicodeError) as error:
+    print(f"claim: {error}", file=sys.stderr)
+    sys.exit(2)
+finally:
+    os.close(directory)
+PY
 }
 
 # Terminate a partial line before appending fields.
@@ -262,21 +301,20 @@ agent_claim_refusal() {
 
 agent_claim_acquire() {
   local raw="$1" id path body pid
-  # BASHPID, not $$: farm.sh holds each task's claim inside a per-task subshell,
-  # where $$ is still the batch pid. Recording the batch pid would make every
-  # worker in a batch an inheritor of every other task's claim, so a worker could
-  # re-farm a sibling's ticket. The subshell pid scopes inheritance to one task's
-  # own descendants, and lives exactly as long as that task.
+  # Record the acquiring subshell so sibling workers have separate claims.
   local self="${BASHPID:-$$}"
   id="$(_agent_claim_sanitize "$raw")" || { echo "claim: bad id" >&2; return 2; }
   path="$AGENT_CLAIM_DIR/$id"
   mkdir -p "$AGENT_CLAIM_DIR"
   body="$(agent_claim_body "$id" "${2:-}" "${3:-}" "${4:-}" "$self")"
 
-  if _agent_claim_create_excl "$path" "$body"; then
-    _agent_claim_own "$id" "$self"
-    return 0
-  fi
+  local result=0
+  _agent_claim_install "$path" "$body" || result=$?
+  case "$result" in
+    0) _agent_claim_own "$id" "$self"; return 0 ;;
+    1) ;;
+    *) return "$result" ;;
+  esac
   pid="$(_agent_claim_field "$path" pid)"
   if _agent_claim_pid_alive "$pid"; then
     # My own lineage: a nested hold. The file is left alone so release by a
@@ -290,12 +328,6 @@ agent_claim_acquire() {
     fi
     agent_claim_refusal "$id" claim >&2
     return 1
-  fi
-  rm -f "$path"
-  if _agent_claim_create_excl "$path" "$body"; then
-    echo "claim: took over stale $id (dead pid ${pid:-none})" >&2
-    _agent_claim_own "$id" "$self"
-    return 0
   fi
   agent_claim_refusal "$id" claim >&2
   return 1

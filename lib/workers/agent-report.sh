@@ -175,26 +175,13 @@ agent_report_origin() {
   printf 'AGENT_REPORT_TO_NAME=%s\n' "$name"
 }
 
-# The mirror image of origin: declare that there is no one to answer.
-#
-# A SessionStart hook runs inside the interactive session that triggered it, so a
-# daemon started from that hook inherits that session's messaging socket for its
-# whole life, and so does every worker it farms — a worker's report then lands
-# in a session that never dispatched it, across work and personal context.
-# Nothing scans the socket directory; the address is pure env inheritance, so
-# severing the env is the whole fix.
-#
-# The split is who asked. Work a human or another agent dispatched on purpose
-# keeps its dispatcher; work a hook or a timer started has none, and its records
-# fall through to the durable inbox and the notify escalation below.
+# Background jobs started by timers or hooks have no originating dispatcher.
 agent_report_detach() {
   local v
   for v in $(compgen -v AGENT_REPORT_TO_ 2>/dev/null || true); do
     unset "$v"
   done
-  # The session id goes too: always-on.sh rebuilds the reply address from it
-  # when AGENT_REPORT_TO_SESSION is empty, which would file a detached batch's
-  # records in the triggering session's inbox.
+  # Clear the session fallback as well as the active socket.
   unset CLAUDE_CODE_MESSAGING_SOCKET CLAUDE_CODE_MESSAGING_TOKEN CLAUDE_CODE_SESSION_ID
 }
 
@@ -210,13 +197,17 @@ agent_report_record_dispatcher() {
 agent_report_load_dispatcher() {
   local statefile="${1:-}"
   [ -n "$statefile" ] && [ -f "$statefile" ] || return 1
-  # shellcheck source=/dev/null
-  . "$statefile"
+  local line
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      AGENT_REPORT_TO_SOCKET=*) AGENT_REPORT_TO_SOCKET="${line#*=}" ;;
+      AGENT_REPORT_TO_SESSION=*) AGENT_REPORT_TO_SESSION="${line#*=}" ;;
+      AGENT_REPORT_TO_NAME=*) AGENT_REPORT_TO_NAME="${line#*=}" ;;
+    esac
+  done < "$statefile"
 }
 
-# rc here must be the MODEL's exit code, not a wrapper's synthesized one:
-# farm.sh rewrites a no-op task to exit 1, and NO-WORK vs FAILED is exactly
-# the distinction that rewrite would destroy.
+# Pass the original worker exit status to distinguish a failed command from a clean no-op.
 agent_report_verdict() {
   local rc="${1:-}" git_state="${2:--}" writes="${3:-0}" flag="${4:-}" ask="${5:-}" offrepo="${6:-0}"
   case "$flag" in
@@ -448,15 +439,13 @@ agent_report_send() {
   [ -n "$task" ] || { echo "agent-report: --task is required" >&2; return 2; }
 
   if [ -n "$statefile" ] && [ -f "$statefile" ]; then
-    # shellcheck source=/dev/null
-    . "$statefile"
+    agent_report_load_dispatcher "$statefile"
   fi
   sock="${AGENT_REPORT_TO_SOCKET:-}"
   sid="${AGENT_REPORT_TO_SESSION:-}"
   name="${AGENT_REPORT_TO_NAME:-}"
 
-  # Evidence, not model judgment: an unanswered ask is the .ask farm's worker
-  # filed next to its .out, with no .answer beside it (agent-ask.sh).
+  # A question remains pending until a sibling answer file exists.
   local ask_state=""
   case "$outfile" in
     *.out)
@@ -479,9 +468,7 @@ agent_report_send() {
     "$git_state" "$writes" "$bytes" "$evidence" "$outfile" "$final" "$note")"
 
   local delivered=no
-  # A test suite shells out to farm.sh with the operator's own socket still in
-  # env, and every stub task would then land in the session running the suite.
-  # Test suites set this; nothing in the real path does.
+  # A disabled live channel still records the report in the inbox.
   if [ "${AGENT_REPORT_DISABLE:-0}" = "1" ]; then
     sock=""
   elif agent_report_deliver "$sock" "$text" "farm/${ticket:-$task}" 2>/dev/null; then
@@ -558,8 +545,7 @@ agent_report_ask() {
   statefile="${statefile:-$askdir/$task.dispatcher}"
 
   if [ -n "$statefile" ] && [ -f "$statefile" ]; then
-    # shellcheck source=/dev/null
-    . "$statefile"
+    agent_report_load_dispatcher "$statefile"
   fi
   local sock="${AGENT_REPORT_TO_SOCKET:-}" sid="${AGENT_REPORT_TO_SESSION:-}"
 
@@ -649,12 +635,11 @@ agent_report_progress() {
   last="$(stat -c %Y "$stamp" 2>/dev/null || echo 0)"
   [ $((now - last)) -ge "$throttle" ] || return 0
   touch "$stamp" 2>/dev/null || true
-  # farm.sh _farm_progress_token reads $base.hb mtime as a liveness signal.
+  # The coordinator can poll the heartbeat timestamp independently of the progress log.
   touch "$base.hb" 2>/dev/null || true
 
   if [ -f "$base.dispatcher" ]; then
-    # shellcheck source=/dev/null
-    . "$base.dispatcher"
+    agent_report_load_dispatcher "$base.dispatcher"
   fi
   local sock="${AGENT_REPORT_TO_SOCKET:-}" sid="${AGENT_REPORT_TO_SESSION:-}"
 
@@ -788,7 +773,7 @@ _agent_report_notify() {
   _agent_report_notify_post "$text" "$jobdir" "$notify"
 }
 
-# Sourced by farm.sh / dispatch.sh; run directly for the CLI above.
+# The same operations are available as sourced functions and executable commands.
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
   case "${1:-}" in
     origin)   agent_report_origin ;;

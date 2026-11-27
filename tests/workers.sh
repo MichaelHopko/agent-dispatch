@@ -49,6 +49,28 @@ holder=
 [ -e "$tmp/previous-trap" ]
 [ ! -e "$AGENT_CLAIM_DIR/OPS-13" ]
 
+# Multiple contenders observe the same abandoned record and attempt recovery.
+printf 'pid=0\n' > "$AGENT_CLAIM_DIR/stale"
+pids=()
+for ((i=0; i<8; ++i)); do
+  (
+    "$claim" wrap stale fixture -- sh -c '
+      echo winner >> "$1/winners"
+      while [ ! -e "$1/release-winner" ]; do sleep 0.05; done
+    ' sh "$tmp" 2>/dev/null || :
+    touch "$tmp/finished-$i"
+  ) &
+  pids+=("$!")
+done
+for ((i=0; i<200; ++i)); do
+  done_count=$(find "$tmp" -name 'finished-*' | wc -l)
+  [ "$done_count" -lt 7 ] || break
+  sleep 0.05
+done
+touch "$tmp/release-winner"
+for pid in "${pids[@]}"; do wait "$pid"; done
+[ "$(wc -l < "$tmp/winners")" -eq 1 ]
+
 "$ask" ask "Which schedule?" --default "Keep current hours" | grep -q 'no answer yet'
 "$ask" pending "$AGENT_ASK_DIR" | grep -q 'Which schedule?'
 "$ask" answer "$AGENT_ASK_DIR" "$AGENT_ASK_TASK" "Use weekends"
@@ -56,6 +78,14 @@ holder=
 "$ask" pending | grep -q 'no pending asks'
 [ "$(AGENT_ASK_TASK=OPS-14 AGENT_ASK_DEADLINE_SECS=0 "$ask" ask 'Continue?' --default 'Stop')" = 'DEFAULT: Stop' ]
 
+(
+  . "$report"
+  AGENT_REPORT_TO_NAME='Household weekend planner'
+  agent_report_origin > "$tmp/dispatcher"
+  unset AGENT_REPORT_TO_NAME
+  agent_report_load_dispatcher "$tmp/dispatcher"
+  [ "$AGENT_REPORT_TO_NAME" = 'Household weekend planner' ]
+)
 printf 'EXPECT: result.md\n' > "$tmp/task"
 [ "$("$report" evidence "$tmp" "$tmp/task")" = 'missing(0/1):result.md' ]
 touch "$tmp/result.md"

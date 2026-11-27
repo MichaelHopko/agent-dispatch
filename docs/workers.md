@@ -1,6 +1,6 @@
 # Worker coordination
 
-Use these Bash helpers from a Manager checkout when a launcher needs to reserve a task, accept a worker's question, or collect progress and completion evidence. Claims coordinate processes on one host. Questions and reports require Python 3 and a state directory shared with the coordinator.
+Use these Bash helpers from a Manager checkout when a launcher needs to reserve a task, accept a worker's question, or collect progress and completion evidence. The helpers use Bash, Python 3 and a state directory shared with the coordinator. Claims coordinate processes on one host.
 
 ## Reserve a task
 
