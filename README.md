@@ -1,4 +1,4 @@
-# Quota Dispatcher
+# Dispatcher
 
 Route delegated jobs across AI subscriptions from one command. Set a priority order and the dispatcher picks the first profile with a runnable adapter, no active cooldown, and no reported exhausted quota window.
 
@@ -7,8 +7,8 @@ Route delegated jobs across AI subscriptions from one command. Set a priority or
 You’ll need Bash 4 or later and an authenticated provider CLI. This example uses Codex.
 
 ```sh
-git clone https://github.com/MichaelHopko/quota-dispatcher.git
-cd quota-dispatcher
+git clone https://github.com/MichaelHopko/agent-dispatch.git
+cd agent-dispatch
 
 config="${QUOTA_DISPATCH_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/quota-dispatcher}"
 mkdir -p "$config/codex"
@@ -20,8 +20,8 @@ exec codex exec "$@"
 ADAPTER
 chmod +x "$config/codex/run"
 
-./quota-dispatch status
-./quota-dispatch run 'Summarize the files in this directory'
+./dispatch status
+./dispatch run 'Summarize the files in this directory'
 ```
 
 To add a subscription, create an executable `run` in its own profile directory and list the profile in `order`. List one profile per line, highest priority first. The adapter receives the arguments and standard input passed to `run`.
@@ -34,13 +34,13 @@ An adapter can return exit code 75 to signal a confirmed provider limit. The dis
 
 | Command | Behavior |
 | --- | --- |
-| `./quota-dispatch status` | Show profiles, eligibility, and reported quota. |
-| `./quota-dispatch pick` | Print the first eligible profile. |
-| `./quota-dispatch run [args...]` | Run the job through the first eligible profile. |
-| `./quota-dispatch limit PROFILE [SECONDS]` | Put a profile on cooldown. |
+| `./dispatch status` | Show profiles, eligibility, and reported quota. |
+| `./dispatch pick` | Print the first eligible profile. |
+| `./dispatch run [args...]` | Run the job through the first eligible profile. |
+| `./dispatch limit PROFILE [SECONDS]` | Put a profile on cooldown. |
 
 Set `QUOTA_DISPATCH_CONFIG` or `QUOTA_DISPATCH_STATE` to override the directories. By default, they’re under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, with fallbacks to `~/.config` and `~/.local/state`. Set `QUOTA_DISPATCH_COOLDOWN` to change the default cooldown from 3,600 seconds.
 
 ## Calling from OpenClaw
 
-From a tool that can launch a local subprocess, call `/absolute/path/to/quota-dispatch run` with the job’s arguments. Run it under the account that owns the configured provider profiles, and surface the command’s exit status to the caller.
+From a tool that can launch a local subprocess, call `/absolute/path/to/dispatch run` with the job’s arguments. Run it under the account that owns the configured provider profiles, and surface the command’s exit status to the caller.
