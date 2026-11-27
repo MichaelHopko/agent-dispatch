@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Each enabled hook links to this script; preserve its event name.
+set -e
+event="${0##*/}"
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)/lib/fleet/services.sh"
+config="${MANAGER_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/manager}"
+directory="${MANAGER_SERVICE_DIR:-$config/services}"
+[[ -d "$directory" ]] || exit 0
+names=()
+for service in "$directory"/*.sh; do
+  [[ -f "$service" ]] || continue
+  name="${service##*/}"
+  names+=("${name%.sh}")
+done
+case "$event" in
+  start|watch|recover) fleet_ensure_services "$directory" "${names[@]}" ;;
+  status)
+    failed=0
+    for name in "${names[@]}"; do
+      printf '== %s ==\n' "$name"
+      "$directory/$name.sh" status || failed=1
+    done
+    exit "$failed"
+    ;;
+  *) echo 'Use a services lifecycle entry point: start, watch, recover, status.' >&2; exit 2 ;;
+esac

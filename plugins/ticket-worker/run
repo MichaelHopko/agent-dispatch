@@ -11,7 +11,7 @@ if [[ ! -s "$job/goal" ]]; then
   "$queue" failed "$job"
   exit 1
 fi
-if "$MANAGER_CLI" run < "$job/goal" > "$job/result" 2> "$job/error"; then
+if env -u LINEAR_API_KEY "$MANAGER_CLI" run < "$job/goal" > "$job/result" 2> "$job/error"; then
   "$queue" complete "$job"
 else
   rc=$?

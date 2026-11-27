@@ -1,0 +1,26 @@
+[
+  {
+    "query": "plan the whole journey for letting customers approve quotes by email and deliver it in layers",
+    "should_trigger": true
+  },
+  {
+    "query": "I have six small related UI tickets, burn them down as one pass",
+    "should_trigger": true
+  },
+  {
+    "query": "design the end-to-end workflow for supplier onboarding, from first contact to first order",
+    "should_trigger": true
+  },
+  {
+    "query": "what is 17 times 23?",
+    "should_trigger": false
+  },
+  {
+    "query": "fix the typo 'recieve' in README.md",
+    "should_trigger": false
+  },
+  {
+    "query": "summarize the plot of Hamlet in two sentences",
+    "should_trigger": false
+  }
+]

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+set -u
+fleet_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" || exit
+. "$fleet_dir/services.sh" || exit
+profile="${1:?Expected a fleet profile}"
+shift
+. "$profile" || exit
+
+fleet_lifecycle() {
+  local event="$1"
+  case "$event" in
+    start) start_daemons || return ;;
+    *) "$event" || return ;;
+  esac
+  "$MANAGER_CLI" _lifecycle "$event"
+}
+
+go() {
+  local forced="" option="${1:-}"
+  if [ "$option" = "--agent" ] || [ "$option" = "-a" ]; then
+    forced="${2:-}"
+    case "$forced" in
+      ''|-*) echo "manager: $option needs a runtime" >&2; return 2 ;;
+    esac
+    fleet_supports_interactive "$forced" || { echo "manager: unknown agent '$forced'" >&2; return 2; }
+    shift 2
+  fi
+  case "${1:-}" in
+    help|-h|--help) usage; return 0 ;;
+    -*) echo "manager: unknown option '$1'" >&2; return 2 ;;
+  esac
+  if [ -n "$forced" ] && [ "${1:-}" = start ] && [ $# -gt 1 ]; then
+    case "$2" in
+      -h|--help) usage; return 0 ;;
+      -*) echo "manager: unknown option '$2'" >&2; return 2 ;;
+    esac
+  fi
+  if [ -n "$forced" ] && { [ $# -eq 0 ] || { [ $# -eq 1 ] && [ "$1" = start ]; }; }; then
+    if [ $# -eq 0 ]; then
+      session "$forced"
+    else
+      fleet_lifecycle start || return
+      if want_repl; then session "$forced"; fi
+    fi
+    return
+  fi
+  local goal="$*"
+  [ -n "$goal" ] || { usage >&2; return 2; }
+  fleet_dispatch_goal "$forced" "$goal"
+}
+
+repl() {
+  local line
+  fleet_lifecycle status || return
+  while :; do
+    printf 'manager> ' >&2
+    IFS= read -r line || break
+    case "$line" in
+      ""|q|quit|exit) break ;;
+      status) fleet_lifecycle status ;;
+      start) fleet_lifecycle start ;;
+      help|-h|--help) usage ;;
+      -*|start\ -*)
+        # Split option words without evaluating the goal as shell code.
+        local -a words
+        read -r -a words <<< "$line"
+        main "${words[@]}" || true
+        ;;
+      *) go "$line" || true ;;
+    esac
+  done
+}
+
+want_repl() {
+  [ "${MANAGER_REPL:-0}" = "1" ] && return 0
+  [ -t 0 ] && [ -t 1 ]
+}
+
+main() {
+  case "${1:-}" in
+    help|-h|--help) usage ;;
+    status) fleet_lifecycle status ;;
+    watch) fleet_lifecycle watch ;;
+    recover) fleet_lifecycle recover ;;
+    install-watchdog) install_watchdog ;;
+    start)
+      if [ $# -eq 1 ]; then
+        fleet_lifecycle start || return
+        if want_repl; then session; fi
+      elif [ "$2" = "--help" ] || [ "$2" = "-h" ]; then
+        usage
+      elif [ "$2" = "--agent" ] || [ "$2" = "-a" ]; then
+        [ $# -le 3 ] || { usage >&2; return 2; }
+        go "$2" "${3:-}" start
+      else
+        case "$2" in -*) echo "manager: unknown option '$2'" >&2; return 2 ;; esac
+        go "$@"
+      fi
+      ;;
+    "")
+      if want_repl; then
+        repl
+      else
+        fleet_lifecycle status || return
+      fi
+      ;;
+    *) go "$@" ;;
+  esac
+}
+
+main "$@"

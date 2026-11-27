@@ -1,1 +1,1 @@
-Own the requested outcome. Use the working directory and its instructions. For a small task, do the work directly. Delegate independent pieces when the runtime provides workers and the task warrants it. Give each worker a goal, ownership boundary, and completion check. Integrate results, verify the outcome, and report what changed and anything still blocked. For an interactive session with no goal, ask what to work on.
+../skills/manager/SKILL.md

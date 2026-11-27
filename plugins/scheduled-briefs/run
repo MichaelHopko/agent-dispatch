@@ -1,0 +1,67 @@
+#!/usr/bin/env python3
+"""Run the next due brief and retain the result in a per-job directory."""
+import json
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+
+def main():
+    catalog = Path(os.environ["MANAGER_BRIEFS_CATALOG"]).resolve()
+    state = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "manager/scheduled-briefs"
+    rows = json.loads(catalog.read_text())
+    if not isinstance(rows, list):
+        raise ValueError("expected a JSON array of jobs")
+    seen = set()
+    due = []
+    now = time.time()
+    for row in rows:
+        name = row["name"]
+        if not isinstance(name, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name) or name in seen:
+            raise ValueError(f"invalid or repeated job name: {name}")
+        seen.add(name)
+        interval = row["every_seconds"]
+        if type(interval) is not int or interval <= 0:
+            raise ValueError(f"{name}: every_seconds must be a positive integer")
+        receipt = state / name / "result.md"
+        last = receipt.stat().st_mtime if receipt.exists() else 0
+        if now - last >= interval:
+            attempted = receipt.parent / "attempt"
+            due.append((attempted.stat().st_mtime if attempted.exists() else 0, name, row, receipt))
+    for _, name, row, receipt in sorted(due, key=lambda item: item[0]):
+        cwd = catalog.parent / row["workspace"]
+        if row.get("gate"):
+            gate = (catalog.parent / row["gate"]).resolve()
+            rc = subprocess.run([gate], cwd=cwd).returncode
+            if rc == 1:
+                continue
+            if rc:
+                raise RuntimeError(f"{name}: gate exited {rc}")
+        receipt.parent.mkdir(parents=True, exist_ok=True)
+        (receipt.parent / "attempt").touch()
+        brief = (catalog.parent / row["brief"]).read_text().strip()
+        if not brief:
+            raise ValueError(f"{name}: empty brief")
+        fd, path = tempfile.mkstemp(dir=receipt.parent)
+        try:
+            with os.fdopen(fd, "w") as out:
+                subprocess.run([os.environ["MANAGER_CLI"], "run"], input=brief,
+                               text=True, stdout=out, cwd=cwd, check=True)
+            if not Path(path).stat().st_size:
+                raise ValueError(f"{name}: empty result")
+            os.replace(path, receipt)
+        finally:
+            Path(path).unlink(missing_ok=True)
+        print(receipt)
+        break
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (ValueError, KeyError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+        sys.exit(f"scheduled-briefs: {error}")

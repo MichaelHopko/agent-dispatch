@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-source "$(dirname "$0")/usage.sh"
+source "$(dirname "${BASH_SOURCE[0]}")/usage.sh" || { return 1 2>/dev/null || exit 1; }
 _ar_fetch_remaining_json() {
   local vendor="$1"
   AGENT_RUNTIME_REMAINING_VENDOR="$vendor" python3 - <<'PY'
@@ -84,10 +84,10 @@ _ar_timeout() {
 }
 
 # Live remaining-or-UNKNOWN for one runtime. Only calls endpoints that exist.
-# AGENT_RUNTIME_REMAINING_STUB[_<rt>] is a test hook (same idea as FARM_RUN_STUB).
+# AGENT_RUNTIME_REMAINING_STUB[_<rt>] sets the response for offline tests.
 agent_runtime_remaining() {
   local rt="${1:-}" out stub_var stub
-  stub_var="AGENT_RUNTIME_REMAINING_STUB_$rt"
+  stub_var="AGENT_RUNTIME_REMAINING_STUB_${rt//[^[:alnum:]_]/_}"
   stub="${!stub_var-}"
   if [ -n "$stub" ]; then
     echo "$stub"
@@ -99,7 +99,6 @@ agent_runtime_remaining() {
   fi
   case "$rt" in
     claude)
-      command -v claude >/dev/null || { echo UNKNOWN; return 0; }
       out="$(_ar_timeout claude /usage </dev/null 2>&1)" || true
       agent_runtime_parse_claude_usage "$out"
       ;;
@@ -121,4 +120,6 @@ agent_runtime_remaining() {
   esac
 }
 
-agent_runtime_remaining "$1"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  agent_runtime_remaining "$1"
+fi
