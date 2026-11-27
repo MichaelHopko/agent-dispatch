@@ -37,7 +37,10 @@ An adapter can return exit code 75 to signal a confirmed provider limit. The dis
 | `./dispatch status` | Show profiles, eligibility, and reported quota. |
 | `./dispatch pick` | Print the first eligible profile. |
 | `./dispatch run [args...]` | Run the job through the first eligible profile. |
+| `./dispatch run --on PROFILE [args...]` | Run through a specific eligible profile. |
 | `./dispatch limit PROFILE [SECONDS]` | Put a profile on cooldown. |
+
+For example, `./dispatch run --on grok 'Summarize this'` selects the configured `grok` profile. If that profile is unavailable, the command exits with an error.
 
 Set `QUOTA_DISPATCH_CONFIG` or `QUOTA_DISPATCH_STATE` to override the directories. By default, they’re under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, with fallbacks to `~/.config` and `~/.local/state`. Set `QUOTA_DISPATCH_COOLDOWN` to change the default cooldown from 3,600 seconds.
 
