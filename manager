@@ -1,0 +1,285 @@
+#!/usr/bin/env python3
+"""Run an interactive manager or delegate a single job."""
+import argparse
+import fcntl
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent
+HOME = Path.home()
+CONFIG_HOME = Path(os.getenv("XDG_CONFIG_HOME", HOME / ".config"))
+CONFIG = Path(os.getenv("MANAGER_CONFIG", CONFIG_HOME / "manager"))
+PROFILES = Path(os.getenv("QUOTA_DISPATCH_CONFIG", CONFIG if (CONFIG / "order").exists()
+                         else CONFIG_HOME / "quota-dispatcher"))
+STATE = Path(os.getenv("QUOTA_DISPATCH_STATE", Path(os.getenv("XDG_STATE_HOME", HOME / ".local/state")) / "quota-dispatcher"))
+BUILTINS = {"claude": "claude", "codex": "codex", "grok": "grok", "cursor": "agent"}
+
+
+def fail(message, code=2):
+    print(f"manager: {message}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def capture(command, timeout=25):
+    try:
+        result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+        return result.stdout.strip() if result.returncode == 0 else ""
+    except (OSError, UnicodeError, subprocess.TimeoutExpired):
+        return ""
+
+
+def executable(path):
+    return path.is_file() and os.access(path, os.X_OK)
+
+
+def valid(name):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", name):
+        fail(f"invalid name: {name}")
+    return name
+
+
+def order():
+    file = PROFILES / "order"
+    if not file.exists():
+        return list(BUILTINS)
+    return list(dict.fromkeys(valid(line) for line in map(str.strip, file.read_text().splitlines())
+                              if line and not line.startswith("#")))
+
+
+def read_number(path):
+    try:
+        return int(path.read_text())
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def number(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as out:
+        out.write(str(value))
+    os.replace(out.name, path)
+
+
+def signed_out(name):
+    # Auth commands and output formats vary by CLI version. Reject an explicit
+    # signed-out response while allowing the CLI to handle unknown formats.
+    commands = {"claude": ["claude", "auth", "status"],
+                "codex": ["codex", "login", "status"],
+                "cursor": ["agent", "status", "--format", "json"],
+                "grok": ["grok", "models"]}
+    try:
+        result = subprocess.run(commands[name], capture_output=True, timeout=8,
+                                stdin=subprocess.DEVNULL)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    output = result.stdout + result.stderr
+    return bool(re.search(rb'not (logged in|authenticated)|"(isAuthenticated|loggedIn)"\s*:\s*false', output, re.I))
+
+
+def inspect(name, mode):
+    profile = PROFILES / name
+    adapter = profile / mode
+    custom = (profile / "run").exists() or (profile / "chat").exists()
+    if custom and not executable(adapter):
+        return f"missing {mode} adapter", None
+    if not custom and (name not in BUILTINS or not shutil.which(BUILTINS[name])):
+        return "CLI missing", None
+    remaining = read_number(STATE / (name + ".cooldown")) - int(time.time())
+    if remaining > 0:
+        return f"cooldown ({remaining}s)", None
+    if not custom and signed_out(name):
+        return "signed out", None
+    meter = profile / "usage"
+    usage = capture([meter]) if executable(meter) else ""
+    if not custom and not executable(meter):
+        usage = capture([ROOT / "lib/meter", name], timeout=30)
+    windows = [int(x) for x in re.findall(r"\b(\d+)% left", usage)]
+    pct = min(windows, default=None)
+    return ("exhausted" if pct == 0 else "eligible"), pct
+
+
+def select(names, mode, pinned, rotate):
+    candidates = []
+    reasons = []
+    for name in names:
+        reason, pct = inspect(name, mode)
+        reasons.append(f"{name}: {reason}")
+        if reason == "eligible":
+            candidates.append((name, pct))
+    if not candidates:
+        fail(", ".join(reasons) or "no configured agents", 1)
+    pool = [item for item in candidates if item[1] is None or item[1] >= 15] or candidates
+    if pinned or not any(pct is not None for _, pct in pool):
+        return pool[0][0]
+    STATE.mkdir(parents=True, exist_ok=True)
+    with (STATE / "rotation.lock").open("a") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        cursor = read_number(STATE / "rotation")
+        if rotate:
+            number(STATE / "rotation", cursor + 1)
+        return pool[cursor % len(pool)][0]
+
+
+def launch(name, mode, args, raw):
+    adapter = PROFILES / name / mode
+    if executable(adapter):
+        command = [adapter, *args]
+    else:
+        task = " ".join(args)
+        if not task and mode == "run" and not sys.stdin.isatty():
+            task = sys.stdin.read()
+        if not task and mode == "run":
+            fail("run requires a goal or input on stdin")
+        instructions = Path(os.getenv("MANAGER_BRIEF", ROOT / "lib/manager.md")).read_text().strip()
+        prompt = task if raw else instructions + "\n\n" + (task or "Ask what to work on.")
+        flags = {"claude": ["-p"], "codex": ["exec", "--skip-git-repo-check"],
+                 "grok": ["-p"], "cursor": ["-p"]} if mode == "run" else {}
+        command = [BUILTINS[name], *flags.get(name, []), prompt]
+    if mode == "chat":
+        os.execvp(str(command[0]), command)
+    if executable(adapter):
+        result = subprocess.run(command).returncode
+    else:
+        with tempfile.TemporaryFile() as errors:
+            result = subprocess.run(command, stderr=errors).returncode
+            errors.seek(0)
+            shutil.copyfileobj(errors, sys.stderr.buffer)
+            errors.seek(max(0, errors.tell() - 8192))
+            tail = b"\n".join(errors.read().splitlines()[-2:])
+            if result and re.search(rb"rate.limit|too many requests|quota exceeded|usage limit|\b429\b", tail, re.I):
+                result = 75
+    if result == 75:
+        number(STATE / (name + ".cooldown"), int(time.time()) + duration(os.getenv("QUOTA_DISPATCH_COOLDOWN", "3600")))
+    return result if result >= 0 else 128 - result
+
+
+def duration(value):
+    if not value.isdecimal() or int(value) < 1:
+        fail("expected a positive number of seconds")
+    return int(value)
+
+
+def enabled_plugins():
+    enabled = CONFIG / "plugins"
+    if enabled.is_dir():
+        yield from (path.resolve() for path in sorted(enabled.iterdir()) if path.is_dir())
+
+
+def hooks(event):
+    directory = CONFIG / "hooks" / (event + ".d")
+    scripts = sorted(directory.iterdir()) if directory.is_dir() else []
+    scripts.extend(plugin / event for plugin in enabled_plugins())
+    for script in scripts:
+        if executable(script):
+            subprocess.run([script], check=True)
+
+
+def watch():
+    hooks("watch")
+    failures = []
+    for plugin in enabled_plugins():
+        interval = plugin / "interval"
+        if not interval.is_file():
+            continue
+        seconds = duration(interval.read_text().strip())
+        base = Path(os.getenv("XDG_STATE_HOME", HOME / ".local/state")) / "manager/plugins" / valid(plugin.name)
+        base.mkdir(parents=True, exist_ok=True)
+        with (base / "lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                continue
+            if time.time() - read_number(base / "success") >= seconds:
+                try:
+                    subprocess.run([plugin / "run"], check=True)
+                except (subprocess.CalledProcessError, OSError) as error:
+                    failures.append(f"{plugin.name}: {error}")
+                else:
+                    number(base / "success", int(time.time()))
+    if failures:
+        fail("\n".join(failures), 1)
+
+
+def main(args, raw=False):
+    os.environ["MANAGER_CLI"] = str(ROOT / "manager")
+    if args[:1] == ["manager"] and raw:
+        return main(args[1:])
+    command = args.pop(0) if args and args[0] in ("status", "pick", "limit", "run", "start", "watch", "recover") else "chat"
+    if command == "limit":
+        if len(args) not in (1, 2):
+            fail("usage: manager limit PROFILE [SECONDS]")
+        number(STATE / (valid(args[0]) + ".cooldown"), int(time.time()) + duration(args[1] if len(args) == 2 else os.getenv("QUOTA_DISPATCH_COOLDOWN", "3600")))
+        return 0
+    parser = argparse.ArgumentParser(prog="manager", usage="manager [run|start|status|pick|limit|watch|recover] [-a AGENT] [goal ...]")
+    parser.add_argument("-a", "--agent")
+    parser.add_argument("goal", nargs=argparse.REMAINDER)
+    opts = parser.parse_args(args)
+    if command in ("watch", "recover", "status") and (opts.goal or opts.agent):
+        parser.error(f"{command} takes no arguments")
+    if command == "watch":
+        watch()
+        return 0
+    if command == "recover":
+        hooks("recover")
+        return 0
+    if command == "start":
+        if opts.goal:
+            parser.error("start accepts only an optional agent selector")
+        if opts.agent:
+            valid(opts.agent)
+        hooks("start")
+        if not sys.stdin.isatty():
+            return 0
+        command = "chat"
+    if command == "chat" and not args and sys.argv[1:2] != ["start"]:
+        if not sys.stdin.isatty():
+            command = "status"
+        elif not raw:
+            import shlex
+            main(["status"])
+            while True:
+                try:
+                    line = input("manager> ").strip()
+                except (EOFError, KeyboardInterrupt):
+                    return 0
+                if line in ("", "q", "quit", "exit"):
+                    return 0
+                try:
+                    words = shlex.split(line)
+                except ValueError as error:
+                    print(error, file=sys.stderr)
+                    continue
+                subprocess.run([ROOT / "manager", *words])
+
+    names = order()
+    if command == "status":
+        for name in names:
+            reason, pct = inspect(name, "run")
+            print(name, reason, f"{pct}% left" if pct is not None else "UNKNOWN", sep="\t")
+        hooks("status")
+        return 0
+    if opts.agent:
+        if valid(opts.agent) not in names:
+            fail(f"profile outside configured order: {opts.agent}")
+        names = [opts.agent]
+    mode = "chat" if command == "chat" else "run"
+    name = select(names, mode, opts.agent, command != "pick")
+    if command == "pick":
+        print(name)
+        return 0
+    return launch(name, mode, opts.goal, raw)
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:], Path(sys.argv[0]).name == "dispatch"))
+    except subprocess.CalledProcessError as error:
+        sys.exit(error.returncode)
+    except (OSError, ValueError) as error:
+        fail(str(error), 1)

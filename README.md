@@ -1,61 +1,59 @@
-# Dispatcher
+# Manager
 
-Route delegated jobs across AI subscriptions from one command. Set a priority order and the dispatcher picks the first profile with a runnable adapter, no active cooldown, and no reported exhausted quota window.
+Launch an interactive coding agent or delegate a job from OpenClaw, a shell, or a scheduled task. Manager uses installed Claude, Codex, Grok, and Cursor CLIs. Sign in through the provider CLI before its first run.
 
-## Quick start
+## Install and run
 
-You’ll need Bash 4 or later and an authenticated provider CLI. This example uses Codex.
+Requires Python 3.8+ on Linux or macOS, Bash, and at least one provider CLI on PATH.
 
 ```sh
 git clone https://github.com/MichaelHopko/agent-dispatch.git
 cd agent-dispatch
+export PATH="$PWD:$PATH"
 
-config="${QUOTA_DISPATCH_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/quota-dispatcher}"
-mkdir -p "$config/codex"
-test -f "$config/order" || printf '%s\n' codex > "$config/order"
-
-cat > "$config/codex/run" <<'ADAPTER'
-#!/usr/bin/env bash
-exec codex exec "$@"
-ADAPTER
-chmod +x "$config/codex/run"
-
-./dispatch status
-./dispatch run 'Summarize the files in this directory'
+manager -a grok
+manager --agent codex "Review the current branch"
+manager run "Summarize today's changes"
+manager status
 ```
 
-To add a subscription, create an executable `run` in its own profile directory and list the profile in `order`. List one profile per line, highest priority first. The adapter receives the arguments and standard input passed to `run`.
+`manager "goal"` opens an interactive session in the terminal. `manager run` runs headlessly, accepts a goal as arguments or stdin, and returns the provider output and exit status. Use `--agent` or `-a` to pin an eligible agent. For OpenClaw, install the [manager-cli skill](skills/manager-cli/SKILL.md) in its skills directory and make the Manager executable available on the gateway host. The working directory and provider logins belong to the user running the command.
 
-## Interactive manager
+## Routing
 
-If you use the dotfiles manager launcher, call it through Dispatcher with its usual arguments:
+Manager checks provider usage windows before launch. A window at zero or an active cooldown excludes an agent. Unknown usage remains eligible. When possible Manager reserves agents below 15% and rotates among eligible agents with measured quota. If every reading is unknown it follows configured order. Provider usage formats and endpoints can vary with CLI version. Provider permission settings govern tool execution.
+
+`manager pick` prints the next headless selection. `manager limit codex 1800` cools Codex down for 30 minutes. A headless adapter can return 75 for a quota limit. Manager also recognizes common limit messages at the end of a failed built-in CLI's stderr. The caller receives the failure and the next job can use another agent.
+
+Place profile names one per line in `~/.config/manager/order` to set priority. A custom profile has executable `run` (headless) and/or `chat` (interactive) adapters in its profile directory. Adapters receive goal arguments and inherit stdin. An optional executable `usage` prints windows such as `week 63% left`. Use `MANAGER_BRIEF` for custom interactive and headless instructions for built-in agents. `QUOTA_DISPATCH_CONFIG`, `QUOTA_DISPATCH_STATE`, and `QUOTA_DISPATCH_COOLDOWN` override the profile directory, state directory, and default cooldown seconds.
+
+## Startup and lifecycle hooks
+
+`manager start` runs startup hooks in filename order. From a terminal it then opens a manager session. An unattended invocation exits after startup. An executable in `~/.config/manager/hooks/start.d/` is enough:
 
 ```sh
-./dispatch manager -a grok
-./dispatch manager --agent codex 'Review this change'
-./dispatch manager status
+mkdir -p ~/.config/manager/hooks/start.d
+cat > ~/.config/manager/hooks/start.d/10-workspace <<'SH'
+#!/bin/sh
+mkdir -p "$HOME/work/agent-jobs"
+SH
+chmod +x ~/.config/manager/hooks/start.d/10-workspace
 ```
 
-This command uses the installed manager and its runtime registry, skills, and fleet configuration. Dispatcher looks for `manager` on PATH, then `~/repos/dotfiles/configs/shell/manager.sh`. Set `DISPATCH_MANAGER_SCRIPT` to override the script location. The standalone `run` command uses subscription profiles.
+Hooks inherit the environment, working directory, and absolute `MANAGER_CLI` path. Write startup hooks so they can safely run again. Long-lived services should start under a service supervisor and return. Use `status.d` for local status checks, `watch.d` for periodic checks, and `recover.d` for explicit recovery. A hook failure returns a nonzero status. Set `MANAGER_CONFIG` to change the configuration root.
 
-## Quota and cooldowns
+## Plugins
 
-A profile can provide an executable `usage` that prints remaining quota, for example `session 30% left · week 80% left`. A window at 0% makes the profile ineligible. A missing meter, a failed meter, or `UNKNOWN` leaves the profile eligible. Optional parsers for Claude, Codex, Cursor, and Grok are in `lib/usage.sh` and require Python 3.
+Enable a plugin by linking its directory into `~/.config/manager/plugins/`. An executable named `start`, `status`, `watch`, or `recover` runs with that lifecycle command. For a scheduled job, add a positive interval in seconds in `interval` and an executable `run`. Invoke `manager watch` periodically with cron, launchd, or a systemd user timer. Each pass runs due jobs, records successful completion, and locks each scheduled job against overlapping invocations. Export plugin settings in the scheduler's environment.
 
-An adapter can return exit code 75 to signal a confirmed provider limit. The dispatcher records a cooldown and returns 75 to the caller. The next job can use another profile. The Codex example passes through the CLI’s exit code. To signal limits automatically, use an adapter that returns 75 for confirmed provider limits.
-
-| Command | Behavior |
+| Plugin | Setup |
 | --- | --- |
-| `./dispatch status` | Show profiles, eligibility, and reported quota. |
-| `./dispatch pick` | Print the first eligible profile. |
-| `./dispatch run [args...]` | Run the job through the first eligible profile. |
-| `./dispatch run --agent PROFILE [args...]` | Run through a specific eligible profile. |
-| `./dispatch limit PROFILE [SECONDS]` | Put a profile on cooldown. |
+| [daily-learnings](plugins/daily-learnings) | Set `MANAGER_LEARNINGS_WORKSPACE` to the workspace whose guidance can improve, and `MANAGER_LEARNINGS_EVIDENCE` to session transcripts or notes. Reviews recent evidence daily. |
+| [ticket-worker](plugins/ticket-worker) | Set `MANAGER_TICKET_WORKSPACE` and `MANAGER_TICKET_QUEUE`. The queue adapter receives `claim DIRECTORY` and atomically leases one eligible ticket, writing its ID to `id` and brief to `goal`. An empty directory means idle. On `complete DIRECTORY` or `failed DIRECTORY`, reconcile the lease using `id`, stdout in `result`, and stderr in `error`. The adapter owns lease expiry, retry policy, and verification before closing a ticket. |
 
-Use `-a` as shorthand for `--agent`. For example, `./dispatch run --agent grok 'Summarize this'` selects the configured `grok` profile. If that profile is unavailable, the command exits with an error.
+```sh
+mkdir -p ~/.config/manager/plugins
+ln -s "$PWD/plugins/daily-learnings" ~/.config/manager/plugins/daily-learnings
+```
 
-Set `QUOTA_DISPATCH_CONFIG` or `QUOTA_DISPATCH_STATE` to override the directories. By default, they’re under `$XDG_CONFIG_HOME` and `$XDG_STATE_HOME`, with fallbacks to `~/.config` and `~/.local/state`. Set `QUOTA_DISPATCH_COOLDOWN` to change the default cooldown from 3,600 seconds.
-
-## Calling from OpenClaw
-
-From a tool that can launch a local subprocess, call `/absolute/path/to/dispatch run` with the job’s arguments. Run it under the account that owns the configured provider profiles, and surface the command’s exit status to the caller.
+Keep organization-specific sources and destinations in plugins. A PR reviewer consumes a diff and emits findings. A PR watcher reacts to changes. An intake plugin creates tickets, while a ticket worker claims existing ones. Scheduled research, digests, direction reviews, and dashboards can each supply their own inputs and delivery hooks.

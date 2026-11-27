@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+queue="${MANAGER_TICKET_QUEUE:?Set MANAGER_TICKET_QUEUE to the queue adapter executable}"
+cd "${MANAGER_TICKET_WORKSPACE:?Set MANAGER_TICKET_WORKSPACE to the worker checkout}"
+job=$(mktemp -d)
+trap 'rm -rf -- "$job"' EXIT
+"$queue" claim "$job"
+[[ -s "$job/id" ]] || exit 0
+if [[ ! -s "$job/goal" ]]; then
+  echo 'Queue adapter returned a claim without a goal' > "$job/error"
+  "$queue" failed "$job"
+  exit 1
+fi
+if "$MANAGER_CLI" run < "$job/goal" > "$job/result" 2> "$job/error"; then
+  "$queue" complete "$job"
+else
+  rc=$?
+  cat "$job/error" >&2
+  "$queue" failed "$job"
+  exit "$rc"
+fi

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+cd "${MANAGER_LEARNINGS_WORKSPACE:?Set MANAGER_LEARNINGS_WORKSPACE to the workspace to review}"
+evidence="${MANAGER_LEARNINGS_EVIDENCE:?Set MANAGER_LEARNINGS_EVIDENCE to a directory of session notes or transcripts}"
+test -d "$evidence" || { echo "Missing evidence directory: $evidence" >&2; exit 1; }
+exec "$MANAGER_CLI" run "Review session evidence in $evidence updated within the past day. Read user corrections in context. Check candidates against the current workspace instructions and implementation. Make the smallest verified improvement to the relevant instructions if authorized by the workspace. Skip duplicates and uncertain claims. Report changes or that no new guidance was needed."
