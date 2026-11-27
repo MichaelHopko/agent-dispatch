@@ -8,7 +8,7 @@ state="${QUOTA_DISPATCH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/quota-dispa
 cooldown="${QUOTA_DISPATCH_COOLDOWN:-3600}"
 
 usage() {
-  printf '%s\n' 'Usage: dispatch status | pick | run [args...] | limit PROFILE [SECONDS]' >&2
+  printf '%s\n' 'Usage: dispatch status | pick | run [--on PROFILE] [args...] | limit PROFILE [SECONDS]' >&2
 }
 valid_profile() {
   [[ "$1" =~ ^[a-zA-Z0-9][a-zA-Z0-9_.-]*$ ]]
@@ -23,9 +23,20 @@ mark_limited() {
 }
 
 action="${1:-}"
+selected_profile=""
 case "$action" in
   status|pick) [[ $# == 1 ]] || { usage; exit 2; } ;;
-  run) shift ;;
+  run)
+    shift
+    if [[ "${1:-}" == --on ]]; then
+      if [[ $# -lt 2 ]] || ! valid_profile "$2"; then
+        usage
+        exit 2
+      fi
+      selected_profile="$2"
+      shift 2
+    fi
+    ;;
   limit)
     if [[ $# -lt 2 || $# -gt 3 ]] || ! valid_profile "$2"; then
       usage
@@ -45,6 +56,7 @@ fi
 while IFS= read -r -u 3 profile || [[ -n "$profile" ]]; do
   [[ -n "$profile" && "$profile" != \#* ]] || continue
   valid_profile "$profile" || { printf 'Invalid profile: %s\n' "$profile" >&2; exit 2; }
+  [[ -z "$selected_profile" || "$profile" == "$selected_profile" ]] || continue
   adapter="$config/$profile/run"
   meter="$config/$profile/usage"
   until_epoch=0
@@ -75,7 +87,11 @@ while IFS= read -r -u 3 profile || [[ -n "$profile" ]]; do
       fi
       ;;
     run)
-      [[ "$reason" == eligible ]] || continue
+      if [[ "$reason" != eligible ]]; then
+        [[ -z "$selected_profile" ]] && continue
+        printf '%s: %s\n' "$profile" "$reason" >&2
+        exit 1
+      fi
       result=0
       "$adapter" "$@" 3<&- || result=$?
       if [[ "$result" == 75 ]]; then
@@ -88,6 +104,10 @@ while IFS= read -r -u 3 profile || [[ -n "$profile" ]]; do
 done 3< "$config/order"
 
 if [[ "$action" != status ]]; then
-  printf '%s\n' 'No eligible subscription profile.' >&2
+  if [[ -n "$selected_profile" ]]; then
+    printf 'Profile is missing from the order file: %s\n' "$selected_profile" >&2
+  else
+    printf '%s\n' 'No eligible subscription profile.' >&2
+  fi
   exit 1
 fi
