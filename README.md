@@ -26,6 +26,19 @@ chmod +x "$config/codex/run"
 
 To add a subscription, create an executable `run` in its own profile directory and list the profile in `order`. List one profile per line, highest priority first. The adapter receives the arguments and standard input passed to `run`.
 
+## Interactive manager
+
+If you use the dotfiles manager launcher, call it through Dispatcher with its usual arguments:
+
+```sh
+./dispatch manager -a grok
+./dispatch manager --agent codex 'Review this change'
+./dispatch manager --on claude 'Plan the implementation'
+./dispatch manager status
+```
+
+This command uses the installed manager and its runtime registry, skills, and fleet configuration. Dispatcher looks for `manager` on PATH, then `~/repos/dotfiles/configs/shell/manager.sh`. Set `DISPATCH_MANAGER_SCRIPT` to override the script location. The standalone `run` command uses subscription profiles.
+
 ## Quota and cooldowns
 
 A profile can provide an executable `usage` that prints remaining quota, for example `session 30% left · week 80% left`. A window at 0% makes the profile ineligible. A missing meter, a failed meter, or `UNKNOWN` leaves the profile eligible. Optional parsers for Claude, Codex, Cursor, and Grok are in `lib/usage.sh` and require Python 3.
