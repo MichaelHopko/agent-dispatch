@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Usage parsers extracted from the original runtime selector.
+# Parse provider usage reports into remaining quota windows.
 agent_runtime_parse_claude_usage() {
   CLAUDE_USAGE_TEXT="$1" python3 - <<'PY'
 import json, os, re
@@ -182,7 +182,7 @@ agent_runtime_remaining_zero() {
 }
 
 # Tightest "N% left" window as an integer, or UNKNOWN. Multiple windows
-# (session + week) use the minimum — same class as RAP-51's any-0%.
+# (session + week) use the minimum.
 agent_runtime_remaining_pct() {
   local rem="$1" min="" n
   case "$rem" in
